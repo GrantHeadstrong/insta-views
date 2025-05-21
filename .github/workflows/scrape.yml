@@ -1,0 +1,22 @@
+name: Scrape IG views
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 h
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: node scripts/appendToSheet.js
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
+          GOOGLE_CLIENT_EMAIL: ${{ secrets.GOOGLE_CLIENT_EMAIL }}
+          REEL_URL: ${{ secrets.REEL_URL }}
