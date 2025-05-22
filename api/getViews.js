@@ -4,34 +4,52 @@ import fetch from "node-fetch";
 
 export default async function handler(req, res) {
   const reelUrl = req.query.url;
-  if (!reelUrl)
-    return res.status(400).json({ error: "Missing ?url=https://…" });
+  if (!reelUrl) return res.status(400).json({ error: "Missing ?url param" });
 
-  /* ───────────── 1️⃣  Fast path — GraphQL ───────────── */
+  const userAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123 Safari/537.36";
+
+  /* ───────────── 1️⃣  Fast path — Instagram GraphQL ───────────── */
   try {
     const shortcode = reelUrl.match(/\/reel\/([^/]+)/)?.[1];
     if (!shortcode) throw new Error("Bad reel URL");
 
-    const gql =
-      "https://www.instagram.com/graphql/query/" +
-      "?query_hash=99c3ec9b3e879def1a2c730ea4101cf6" +
-      "&variables=" +
-      encodeURIComponent(JSON.stringify({ shortcode }));
+    /* Two known hashes that return video_view_count (checked May-2025) */
+    const hashes = [
+      "99c3ec9b3e879def1a2c730ea4101cf6",
+      "7d9519a04da32efc7c6073d3cdcb93bf",
+    ];
 
-    const json = await fetch(gql, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        Referer: "https://www.instagram.com/",
-      },
-    }).then((r) => r.json());
+    for (const hash of hashes) {
+      const gql =
+        "https://www.instagram.com/graphql/query/" +
+        `?query_hash=${hash}` +
+        `&variables=${encodeURIComponent(JSON.stringify({ shortcode }))}`;
 
-    const plays = json?.data?.shortcode_media?.video_view_count;
-    if (plays != null) return res.json({ views: plays });
-  } catch (_) {
-    /* fall through to Puppeteer */
+      const json = await fetch(gql, {
+        headers: { "User-Agent": userAgent, Referer: "https://www.instagram.com/" },
+      }).then((r) => r.json());
+
+      const plays = json?.data?.shortcode_media?.video_view_count;
+      if (plays != null) return res.json({ views: plays });
+    }
+  } catch {
+    /* ignore and fall through */
   }
 
-  /* ───────────── 2️⃣  Fallback — headless Chrome ───────────── */
+  /* ───────────── 2️⃣  Second path — raw HTML regex ───────────── */
+  try {
+    const html = await fetch(reelUrl, {
+      headers: { "User-Agent": userAgent, Referer: "https://www.instagram.com/" },
+    }).then((r) => r.text());
+
+    const m = html.match(/"video_view_count":\s*([0-9]+)/);
+    if (m) return res.json({ views: Number(m[1]) });
+  } catch {
+    /* ignore and fall through */
+  }
+
+  /* ───────────── 3️⃣  Final fallback — headless Chrome ───────────── */
   try {
     const browser = await puppeteer.launch({
       args: chromium.args,
@@ -41,38 +59,30 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    await page.setExtraHTTPHeaders({
-      Referer: "https://www.instagram.com/",
-    });
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    );
+    await page.setExtraHTTPHeaders({ Referer: "https://www.instagram.com/" });
+    await page.setUserAgent(userAgent);
     await page.goto(reelUrl, { waitUntil: "domcontentloaded" });
-
-    /* Give lazy JS a moment but don’t hard-error if selector missing */
-    await page.waitForTimeout(3000);
+    await new Promise((r) => setTimeout(r, 3000)); // brief pause for lazy JS
 
     const views = await page.evaluate(() => {
       const clean = (t) => t.replace(/[^0-9]/g, "");
 
-      /* a) JSON inside <script id="__NEXT_DATA__"> (if present) */
+      /* a) JSON in ld+json tag */
       try {
-        const jsonTxt =
-          document.querySelector("#__NEXT_DATA__")?.textContent;
-        if (jsonTxt) {
-          const data = JSON.parse(jsonTxt);
-          const count =
-            data.props?.pageProps?.graphql?.shortcode_media
-              ?.video_view_count;
-          if (count != null) return clean(String(count));
+        const ld = document.querySelector('script[type="application/ld+json"]')
+          ?.innerText;
+        if (ld) {
+          const obj = JSON.parse(ld);
+          const cnt = obj?.interactionStatistic?.userInteractionCount;
+          if (cnt) return clean(String(cnt));
         }
-      } catch (_) {}
+      } catch {}
 
       /* b) aria-label selector */
       const aria = document.querySelector('span[aria-label$=" views"]');
       if (aria) return clean(aria.textContent);
 
-      /* c) any element whose text ends with “ views” */
+      /* c) any element ending with “ views” */
       const any = [...document.querySelectorAll("*")]
         .map((el) => el.innerText)
         .find((t) => / views?$/.test(t?.trim()));
@@ -91,8 +101,6 @@ export default async function handler(req, res) {
     await browser.close();
     return res.json({ views });
   } catch (err) {
-    return res
-      .status(500)
-      .json({ error: "Puppeteer error: " + err.toString() });
+    return res.status(500).json({ error: err.toString() });
   }
 }
