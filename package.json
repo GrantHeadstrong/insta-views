@@ -2,6 +2,8 @@
   "type": "module",
   "dependencies": {
     "@sparticuz/chromium": "^133.0.0",
-    "puppeteer-core": "^24.4.0"
+    "puppeteer-core":      "^24.4.0",
+    "googleapis":          "^132.0.0",
+    "node-fetch":          "^3.3.2"
   }
 }
