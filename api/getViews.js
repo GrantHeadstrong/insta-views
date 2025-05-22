@@ -7,12 +7,11 @@ export default async function handler(req, res) {
   if (!reelUrl)
     return res.status(400).json({ error: "Missing ?url=https://…" });
 
-  /* ──────────────── 1️⃣  Fast path — GraphQL ──────────────── */
+  /* ───────────── 1️⃣  Fast path — GraphQL ───────────── */
   try {
     const shortcode = reelUrl.match(/\/reel\/([^/]+)/)?.[1];
     if (!shortcode) throw new Error("Bad reel URL");
 
-    /* Updated query_hash: checked 22 May 2025 */
     const gql =
       "https://www.instagram.com/graphql/query/" +
       "?query_hash=99c3ec9b3e879def1a2c730ea4101cf6" +
@@ -32,7 +31,7 @@ export default async function handler(req, res) {
     /* fall through to Puppeteer */
   }
 
-  /* ──────────────── 2️⃣  Puppeteer fallback ──────────────── */
+  /* ───────────── 2️⃣  Fallback — headless Chrome ───────────── */
   try {
     const browser = await puppeteer.launch({
       args: chromium.args,
@@ -50,13 +49,13 @@ export default async function handler(req, res) {
     );
     await page.goto(reelUrl, { waitUntil: "domcontentloaded" });
 
-    /* Wait for IG to inject its JSON */
-    await page.waitForSelector("#__NEXT_DATA__", { timeout: 10000 });
+    /* Give lazy JS a moment but don’t hard-error if selector missing */
+    await page.waitForTimeout(3000);
 
     const views = await page.evaluate(() => {
       const clean = (t) => t.replace(/[^0-9]/g, "");
 
-      /* a) Parse embedded JSON in <script id="__NEXT_DATA__"> */
+      /* a) JSON inside <script id="__NEXT_DATA__"> (if present) */
       try {
         const jsonTxt =
           document.querySelector("#__NEXT_DATA__")?.textContent;
@@ -67,15 +66,13 @@ export default async function handler(req, res) {
               ?.video_view_count;
           if (count != null) return clean(String(count));
         }
-      } catch (e) {
-        /* ignore and try other methods */
-      }
+      } catch (_) {}
 
-      /* b) aria-label selector (older markup) */
+      /* b) aria-label selector */
       const aria = document.querySelector('span[aria-label$=" views"]');
       if (aria) return clean(aria.textContent);
 
-      /* c) any element with text ending in “ views” */
+      /* c) any element whose text ends with “ views” */
       const any = [...document.querySelectorAll("*")]
         .map((el) => el.innerText)
         .find((t) => / views?$/.test(t?.trim()));
