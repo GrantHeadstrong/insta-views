@@ -3,10 +3,12 @@ import puppeteer from "puppeteer-core";
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
+  /* ───────────────── Input check ───────────────── */
   const reelUrl = req.query.url;
-  if (!reelUrl) return res.status(400).json({ error: "Missing ?url" });
+  if (!reelUrl)
+    return res.status(400).json({ error: "Missing ?url=https://…" });
 
-  /* ───────── 1️⃣ Fast path – Instagram GraphQL ───────── */
+  /* ─────────────── 1️⃣  Fast path – IG GraphQL ─────────────── */
   try {
     const shortcode = reelUrl.match(/\/reel\/([^/]+)/)?.[1];
     if (!shortcode) throw new Error("Bad reel URL");
@@ -25,7 +27,7 @@ export default async function handler(req, res) {
     /* fall through to Puppeteer */
   }
 
-  /* ───────── 2️⃣ Fallback – headless Chrome ───────── */
+  /* ─────────────── 2️⃣  Fallback – headless Chrome ─────────────── */
   try {
     const browser = await puppeteer.launch({
       args: chromium.args,
@@ -38,19 +40,24 @@ export default async function handler(req, res) {
     await page.setExtraHTTPHeaders({ Referer: "https://www.instagram.com/" });
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
     await page.goto(reelUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(4000);      // allow lazy JS
+
+    /* Wait until IG’s meta description appears (safer than fixed timeout) */
+    await page.waitForSelector('meta[property="og:description"]', { timeout: 10000 });
 
     const views = await page.evaluate(() => {
       const clean = t => t.replace(/[^0-9]/g, "");
 
+      /* a) aria-label selector */
       const aria = document.querySelector('span[aria-label$=" views"]');
       if (aria) return clean(aria.textContent);
 
+      /* b) any element whose text ends with “ views” */
       const any = [...document.querySelectorAll("*")]
         .map(el => el.innerText)
         .find(t => / views?$/.test(t?.trim()));
       if (any) return clean(any);
 
+      /* c) og:description meta tag */
       const og = document
         .querySelector('meta[property="og:description"]')
         ?.getAttribute("content");
